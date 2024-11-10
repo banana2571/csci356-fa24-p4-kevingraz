@@ -33,8 +33,6 @@
 #   python client_pipelined.py 1.2.3.4 6000 50 0.030
 # This will send data to a server at IP address 1.2.3.4 port 6000, using
 # pipeline with N=100 outstanding packets and 0.030 second (30 ms) timeout.
-# Edited by Kevin Graziosi Nov 2024
-# -Changed it so cumulative acks work
 
 import socket
 import sys
@@ -52,8 +50,8 @@ verbose = 3
 tracefile = "client_pipelined_packets.csv"
 # tracefile = None # This will disable writing a trace file for the client
 
-def main(host, port, n, t):
-    print("Sending UDP packets to %s:%d using N=%d pipelining and timeout T=%f seconds" % (host, port, n, t))
+def main(host, port, t):
+    print("Sending UDP packets to %s:%d using timeout T=%f seconds" % (host, port, t))
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # Makes a UDP socket!
     
     trace.init(tracefile,
@@ -70,6 +68,8 @@ def main(host, port, n, t):
     have_more_data = True # keep track of whether we have more data to send
     outstanding = { } # a dictionary containing outstanding packets
     state = 0 # the current state for our protocol
+    highest_cum_ack = -1
+    swnd = 1 # the size of the send window
 
     # keep going if there more data OR some data is not yet acknowledged
     while have_more_data or len(outstanding) > 0:
@@ -101,7 +101,7 @@ def main(host, port, n, t):
             # prepare for the next packet
             seqno += 1
 
-            if len(outstanding) >= n: state = 2 # go to state 2
+            if len(outstanding) >= swnd: state = 2 # go to state 2
             else: state = 0 # go back to state 0
 
         elif state == 2: # Wait for the desired ACK
@@ -117,17 +117,15 @@ def main(host, port, n, t):
                 # write info about the ACK to the log file
                 trace.write(0, 0, ackno, tRecv - start)
 
-                if ackno >= desired_ackno:
-                    for i in range(desired_ackno, ackno + 1):
-                        if i in outstanding:
-                            del outstanding[i]
-                    desired_ackno = ackno + 1
-                    if len(outstanding) < n and have_more_data:
-                        state = 0
-                    else:
-                        state = 2
-                elif ackno < desired_ackno:
-                    print(f"Received duplicate or out-of-order ACK {ackno}, waiting for {desired_ackno}.")
+                if ackno > highest_cum_ack:
+                    highest_cum_ack = ackno
+                    desired_ackno = highest_cum_ack + 1
+                    outstanding = {seq: pkt_info for seq, pkt_info in outstanding.items() if seq > highest_cum_ack}
+                    swnd += 1 # when we get an ack, add one to the send window
+                
+                if len(outstanding) < swnd and have_more_data:
+                    state = 0
+                else:
                     state = 2
 
             except (socket.timeout, socket.error):
@@ -135,24 +133,14 @@ def main(host, port, n, t):
                 state = 3
 
         elif state == 3: # Resend all outstanding packets.
-            # Do we care what order we resend the packets? Maybe? Think about it.
-            # If we like, we could loop over the dictionary like this:
-            #    for resend_seqno, resend_pkt in outstanding.items(): ...
-            # and the packets would be sent in sorted order, because python3.7
-            # and above keeps items in a dictionary in the same order they were
-            # added to the dictionary.
-            #
-            # Here, we also know that the outstanding packets are exactly those
-            # from desired_ackno, up to (but not including) seqno. So we can
-            # loop over that range...
             tSend = time.time()
-            for i in range(desired_ackno, seqno):
-                pkt = outstanding[i]
-                s.sendto(pkt, (host, port))
-                # print stuff and record in trace file
+            if desired_ackno in outstanding:
+                pkt = outstanding[desired_ackno]
+                s.sendto(pkt, (host,port))
+                swnd = 1 # if we retransmit, reset send window to 1
                 if verbose >= 2:
-                    print("Re-sent packet with seqno %d" % (i))
-                trace.write(seqno, tSend - start, 0, 0)
+                    print("Re-sent packet with ackno %d" % desired_ackno)
+            
             state = 2
 
         else:
@@ -166,12 +154,11 @@ def main(host, port, n, t):
     trace.close()
 
 if __name__ == "__main__":
-    if len(sys.argv) <= 3:
+    if len(sys.argv) <= 2:
         print("To send data to server 1.2.3.4 port 6000, try running:")
         print("   python client.py 1.2.3.4 6000")
         sys.exit(0)
     host = sys.argv[1]
     port = int(sys.argv[2])
-    n = int(sys.argv[3])
-    t = float(sys.argv[4])
-    main(host, port, n, t)
+    t = float(sys.argv[3])
+    main(host, port, t)

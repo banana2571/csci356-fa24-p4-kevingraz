@@ -11,7 +11,7 @@
 # magic number 0xAAAAAAAA followed by the sequence number just received. 
 # 
 # What it doesn't do: There is no real attempt to detect missing packets, send
-# NACKs, or do any sort of flow-control. The
+# NACKs, use cumulative acknowledgements, or do any sort of flow-control. The
 # code in datasink.py will keep track of duplicates and rearrange mis-ordered
 # packets, so we don't need to worry about that here.
 #
@@ -19,8 +19,6 @@
 #   python3 server.py 1.2.3.4 6000
 # This will listen for data on UDP 1.2.3.4:6000. The IP address should be the IP
 # for our own host.
-# Edited by Kevin Graziosi Nov 2024
-# -Added cumulative acks
 
 import socket
 import sys
@@ -51,9 +49,8 @@ def main(host, port):
             "SeqNo", "TimeArrived", "NumTimesSeen")
     datasink.init(host)
 
-    last_acked_seqno = -1
-    expected_seqno = 0
-
+    last_cum_ack = -1
+    out_of_order_packets = {}
     start = time.time()
     while True:
         # wait for a packet, and record the time it arrived
@@ -67,31 +64,39 @@ def main(host, port):
         # unpack integers from the header
         (magic, seqno) = struct.unpack(">II", hdr)
 
-        if seqno > last_acked_seqno + 1:
-            if verbose >= 2:
-                print(f"Received out-of-order packet: expected seqno {last_acked_seqno + 1}, got {seqno}.")
-            ack = bytearray(struct.pack(">II", 0xAAAAAAAA, last_acked_seqno))
-            s.sendto(ack, client_addr)
-            continue
-        else:
-            # give the packet to the consumer
-            numTimesSeen = datasink.deliver(seqno, payload)
 
-            if verbose >= 2:
-                print("Got a packet containing %d bytes from %s" % (len(packet), str(client_addr)))
-                print("  packet had magic = 0x%08x and seqno = %d" % (magic, seqno))
-                print("  packet has been seen %d times, including this time" % (numTimesSeen))
-
-            # write info about the packet to the log file
-            trace.write(seqno, tRecv - start, numTimesSeen)
-
-        last_acked_seqno = seqno
-
-        # create and send an ACK
         if verbose >= 2:
-            print("  sending ACK in reply containing seqno = %d" % (last_acked_seqno))
-        ack = bytearray(struct.pack(">II", 0xAAAAAAAA, last_acked_seqno))
-        s.sendto(ack, client_addr)
+            print("Got a packet containing %d bytes from %s" % (len(packet), str(client_addr)))
+            print("  packet had magic = 0x%08x and seqno = %d" % (magic, seqno))
+
+        if seqno == last_cum_ack + 1:
+            process_packet(seqno, payload, start, tRecv)
+            last_cum_ack = seqno
+        
+            while last_cum_ack + 1 in out_of_order_packets:
+                last_cum_ack += 1
+                payload = out_of_order_packets.pop(last_cum_ack)
+                process_packet(last_cum_ack, payload, start, tRecv)
+            
+            send_cum_ack(s, client_addr, last_cum_ack)
+            
+        elif seqno > last_cum_ack + 1:
+            out_of_order_packets[seqno] = payload
+            if verbose >= 2:
+                print(f"  Out of order packet received with seqno {seqno}")
+
+def process_packet(seqno, payload, start, tRecv):
+    numTimesSeen = datasink.deliver(seqno, payload)
+    if verbose >= 2:
+        print(f"Processing packet with seqno {seqno}")
+        print(f"Packet has been seen {numTimesSeen} times, including this time")
+    trace.write(seqno, tRecv - start, numTimesSeen)
+
+def send_cum_ack(s, client_addr, last_cum_ack):
+    if verbose >= 2:
+        print(f"Sending cum ack up to seqno {last_cum_ack}")
+    ack = bytearray(struct.pack(">II", 0xAAAAAAAA, last_cum_ack))
+    s.sendto(ack, client_addr)
 
 
 if __name__ == "__main__":
