@@ -121,7 +121,7 @@ def main(host, port, t):
                     highest_cum_ack = ackno
                     desired_ackno = highest_cum_ack + 1
                     outstanding = {seq: pkt_info for seq, pkt_info in outstanding.items() if seq > highest_cum_ack}
-                    swnd += 1 # when we get an ack, add one to the send window
+                    swnd = min(150, swnd + 1) # when we get an ack, add one to the send window
                 
                 if len(outstanding) < swnd and have_more_data:
                     state = 0
@@ -134,13 +134,19 @@ def main(host, port, t):
 
         elif state == 3: # Resend all outstanding packets.
             tSend = time.time()
-            if desired_ackno in outstanding:
-                pkt = outstanding[desired_ackno]
-                s.sendto(pkt, (host,port))
-                swnd = 1 # if we retransmit, reset send window to 1
-                if verbose >= 2:
-                    print("Re-sent packet with ackno %d" % desired_ackno)
-            
+            #if desired_ackno in outstanding:
+            #    pkt = outstanding[desired_ackno]
+            #    s.sendto(pkt, (host,port))
+            #    swnd = 1 # if we retransmit, reset send window to 1
+            #    if verbose >= 2:
+            #        print("Re-sent packet with ackno %d" % desired_ackno)
+            for seq in range(desired_ackno, round((desired_ackno + seqno) / 2)):
+                if seq in outstanding:
+                    pkt = outstanding[seq]
+                    s.sendto(pkt, (host,port))
+                    if verbose >= 2:
+                        print(f"Re-sent packet with seqno {seq}")
+            swnd = 1
             state = 2
 
         else:
