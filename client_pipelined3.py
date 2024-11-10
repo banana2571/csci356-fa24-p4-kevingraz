@@ -24,15 +24,13 @@
 # each packet, for no reason at all (you can replace it with something else, or
 # remove it entirely).
 #
-# What it doesn't do: There are no NACKs, and this makes only a little effort to
-# match up ACKs numbers with corresponding data packets. Any ACKs that arrive
-# out of order are ignored, and when timeouts occur, it assumes all recent
-# packets have been lost and it retransmits all of them.
 #
 # Run the program like this:
-#   python client_pipelined.py 1.2.3.4 6000 50 0.030
+#   python client_pipelined.py 1.2.3.4 6000 0.030
 # This will send data to a server at IP address 1.2.3.4 port 6000, using
-# pipeline with N=100 outstanding packets and 0.030 second (30 ms) timeout.
+# pipeline with 0.030 second (30 ms) timeout.
+# Edited by Kevin Graziosi Nov 2024
+#   - Added cumulative acks and a dynamic (ish) window size
 
 import socket
 import sys
@@ -121,7 +119,7 @@ def main(host, port, t):
                     highest_cum_ack = ackno
                     desired_ackno = highest_cum_ack + 1
                     outstanding = {seq: pkt_info for seq, pkt_info in outstanding.items() if seq > highest_cum_ack}
-                    swnd = min(150, swnd + 1) # when we get an ack, add one to the send window
+                    swnd = min(150, swnd + 1) # when we get an ack, add one to the send window, but don't make it larger than 150
                 
                 if len(outstanding) < swnd and have_more_data:
                     state = 0
@@ -132,15 +130,9 @@ def main(host, port, t):
                 print(f"Timeout, ACK {desired_ackno} didn't arrive quick enough!")
                 state = 3
 
-        elif state == 3: # Resend all outstanding packets.
+        elif state == 3: # Resend  outstanding packets.
             tSend = time.time()
-            #if desired_ackno in outstanding:
-            #    pkt = outstanding[desired_ackno]
-            #    s.sendto(pkt, (host,port))
-            #    swnd = 1 # if we retransmit, reset send window to 1
-            #    if verbose >= 2:
-            #        print("Re-sent packet with ackno %d" % desired_ackno)
-            for seq in range(desired_ackno, round((desired_ackno + seqno) / 2)):
+            for seq in range(desired_ackno, round((desired_ackno + seqno) / 2)): # only resend half of the packets
                 if seq in outstanding:
                     pkt = outstanding[seq]
                     s.sendto(pkt, (host,port))

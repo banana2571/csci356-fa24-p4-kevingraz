@@ -19,6 +19,8 @@
 #   python3 server.py 1.2.3.4 6000
 # This will listen for data on UDP 1.2.3.4:6000. The IP address should be the IP
 # for our own host.
+# Edited by Kevin Graziosi Nov 2024
+#   - Added cumulative acks
 
 import socket
 import sys
